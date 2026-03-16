@@ -66,7 +66,8 @@ pub fn delete_encrypted_config() -> Result<(), String> {
     let entry = Entry::new("universalai-agent", "config")
         .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
 
-    entry.delete_credential()
+    // keyring 2.x uses delete_password instead of delete_credential
+    entry.delete_password()
         .map_err(|e| format!("Failed to delete config from keyring: {}", e))?;
 
     println!("✅ Configuration deleted successfully");
