@@ -1,5 +1,5 @@
 import { createStore, produce } from 'solid-js/store';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import type { AppConfig, MilvusConfig, UserPreferences } from '@universalai-agent/shared';
 
 export class ConfigStore {
