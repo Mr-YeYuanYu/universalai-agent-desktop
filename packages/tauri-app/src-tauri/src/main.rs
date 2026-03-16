@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    universalai_agent_lib::run()
+    universalai_agent::run()
 }

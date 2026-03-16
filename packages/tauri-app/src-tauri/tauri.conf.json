@@ -28,7 +28,12 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis", "dmg", "app"],
-    "icon": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
     "publisher": "Mr-YeYuanYu",
     "homepage": "https://github.com/Mr-YeYuanYu/universalai-agent-desktop",
     "shortDescription": "AI-powered API Agent Desktop Application",
