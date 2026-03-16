@@ -4,23 +4,34 @@ import { llmClient } from '../llm-client';
 import { milvusClient } from '../milvus-client';
 
 export class ChatStore {
-  private [state, setState] = createStore<{
+  private stateStore: ReturnType<typeof createStore<{
     conversations: Conversation[];
     activeConversationId: string | null;
     isStreaming: boolean;
     isSearchingAPIs: boolean;
     error: string | null;
-  }>({
-    conversations: [],
-    activeConversationId: null,
-    isStreaming: false,
-    isSearchingAPIs: false,
-    error: null
-  });
+  }>>;
 
   constructor() {
+    // Initialize store in constructor
+    this.stateStore = createStore({
+      conversations: [],
+      activeConversationId: null,
+      isStreaming: false,
+      isSearchingAPIs: false,
+      error: null
+    });
+
     this.loadConversations();
   }
+
+  // Getters
+  get state() {
+    return this.stateStore[0];
+  }
+
+  // Private setter
+  private setState = this.stateStore[1];
 
   /**
    * Load conversations from local storage
@@ -30,9 +41,9 @@ export class ChatStore {
       const saved = localStorage.getItem('conversations');
       if (saved) {
         const conversations: Conversation[] = JSON.parse(saved);
-        setState('conversations', conversations);
+        this.setState('conversations', conversations);
         if (conversations.length > 0) {
-          setState('activeConversationId', conversations[0].id);
+          this.setState('activeConversationId', conversations[0].id);
         }
       }
     } catch (error) {
@@ -63,7 +74,7 @@ export class ChatStore {
       updatedAt: Date.now()
     };
 
-    setState(produce(state => {
+    this.setState(produce(state => {
       state.conversations.unshift(newConversation);
       state.activeConversationId = newConversation.id;
     }));
@@ -76,7 +87,7 @@ export class ChatStore {
    * Delete a conversation
    */
   deleteConversation(id: string): void {
-    setState(produce(state => {
+    this.setState(produce(state => {
       const index = state.conversations.findIndex(c => c.id === id);
       if (index !== -1) {
         state.conversations.splice(index, 1);
@@ -95,7 +106,7 @@ export class ChatStore {
    * Set active conversation
    */
   setActiveConversation(id: string): void {
-    setState('activeConversationId', id);
+    this.setState('activeConversationId', id);
   }
 
   /**
@@ -125,7 +136,7 @@ export class ChatStore {
       status: 'success'
     };
 
-    setState(produce(state => {
+    this.setState(produce(state => {
       const conv = state.conversations.find(c => c.id === conversationId);
       if (conv) {
         conv.messages.push(userMessage);
@@ -151,7 +162,7 @@ export class ChatStore {
 
     // Create placeholder for assistant response
     const assistantMessageId = crypto.randomUUID();
-    setState(produce(state => {
+    this.setState(produce(state => {
       const conv = state.conversations.find(c => c.id === conversationId);
       if (conv) {
         conv.messages.push({
@@ -164,8 +175,8 @@ export class ChatStore {
       }
     }));
 
-    setState('isStreaming', true);
-    setState('error', null);
+    this.setState('isStreaming', true);
+    this.setState('error', null);
 
     try {
       // Stream LLM response
@@ -173,7 +184,7 @@ export class ChatStore {
         messages,
         // On token
         (token: string) => {
-          setState(produce(state => {
+          this.setState(produce(state => {
             const conv = state.conversations.find(c => c.id === conversationId);
             if (conv) {
               const msg = conv.messages.find(m => m.id === assistantMessageId);
@@ -186,7 +197,7 @@ export class ChatStore {
         // On complete
         async () => {
           // Mark message as success
-          setState(produce(state => {
+          this.setState(produce(state => {
             const conv = state.conversations.find(c => c.id === conversationId);
             if (conv) {
               const msg = conv.messages.find(m => m.id === assistantMessageId);
@@ -197,7 +208,7 @@ export class ChatStore {
             }
           }));
 
-          setState('isStreaming', false);
+          this.setState('isStreaming', false);
           this.saveConversations();
 
           // Search for matching APIs
@@ -205,7 +216,7 @@ export class ChatStore {
         },
         // On error
         (error: string) => {
-          setState(produce(state => {
+          this.setState(produce(state => {
             const conv = state.conversations.find(c => c.id === conversationId);
             if (conv) {
               const msg = conv.messages.find(m => m.id === assistantMessageId);
@@ -216,15 +227,15 @@ export class ChatStore {
             }
           }));
 
-          setState('isStreaming', false);
-          setState('error', error);
+          this.setState('isStreaming', false);
+          this.setState('error', error);
         }
       );
 
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      setState('error', errorMsg);
-      setState('isStreaming', false);
+      this.setState('error', errorMsg);
+      this.setState('isStreaming', false);
     }
   }
 
@@ -232,13 +243,13 @@ export class ChatStore {
    * Search for matching APIs
    */
   private async searchAPIs(query: string, conversationId: string): Promise<void> {
-    setState('isSearchingAPIs', true);
+    this.setState('isSearchingAPIs', true);
 
     try {
       const apis = await milvusClient.searchAPIs(query, 5);
 
       // Add APIs to the last assistant message
-      setState(produce(state => {
+      this.setState(produce(state => {
         const conv = state.conversations.find(c => c.id === conversationId);
         if (conv && conv.messages.length > 0) {
           const lastMsg = conv.messages[conv.messages.length - 1];
@@ -257,7 +268,7 @@ export class ChatStore {
       console.error('API search failed:', error);
       // Don't show error to user, as this is a background operation
     } finally {
-      setState('isSearchingAPIs', false);
+      this.setState('isSearchingAPIs', false);
     }
   }
 
@@ -266,14 +277,14 @@ export class ChatStore {
    */
   cancelStream(): void {
     llmClient.cancel();
-    setState('isStreaming', false);
+    this.setState('isStreaming', false);
   }
 
   /**
    * Clear error
    */
   clearError(): void {
-    setState('error', null);
+    this.setState('error', null);
   }
 
   /**
