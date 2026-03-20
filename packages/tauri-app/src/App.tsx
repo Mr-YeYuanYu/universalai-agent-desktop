@@ -1,9 +1,16 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, Show, createEffect } from 'solid-js';
 import { ConfigPage } from './components/ConfigPage';
+import { configStore } from './modules/config';
 
 function App() {
   const [currentView, setCurrentView] = createSignal<'config' | 'chat'>('config');
-  const [hasConfig, setHasConfig] = createSignal(false);
+
+  // 根据连接状态自动切换视图
+  createEffect(() => {
+    if (configStore.isConnected) {
+      // 连接成功后可以切换到对话视图
+    }
+  });
 
   return (
     <div class="min-h-screen bg-gray-50">
@@ -17,12 +24,22 @@ function App() {
               </h1>
             </div>
 
+            {/* Connection Status Indicator */}
+            <Show when={configStore.isConnected}>
+              <div class="flex items-center">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                  <span class="w-1.5 h-1.5 mr-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                  已连接
+                </span>
+              </div>
+            </Show>
+
             <div class="flex items-center space-x-4">
               <button
-                class={`px-4 py-2 text-sm font-medium rounded-md ${
+                class={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
                   currentView() === 'config'
                     ? 'bg-blue-100 text-blue-700'
-                    : 'text-gray-600 hover:text-gray-900'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
                 }`}
                 onClick={() => setCurrentView('config')}
               >
@@ -30,13 +47,13 @@ function App() {
               </button>
 
               <button
-                class={`px-4 py-2 text-sm font-medium rounded-md ${
+                class={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
                   currentView() === 'chat'
                     ? 'bg-blue-100 text-blue-700'
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-                onClick={() => setCurrentView('chat')}
-                disabled={!hasConfig()}
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                } ${!configStore.isConnected ? 'opacity-50 cursor-not-allowed' : ''}`}
+                onClick={() => configStore.isConnected && setCurrentView('chat')}
+                disabled={!configStore.isConnected}
               >
                 💬 对话
               </button>

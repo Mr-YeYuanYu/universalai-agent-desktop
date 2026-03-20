@@ -1,5 +1,5 @@
-import { createStore, produce } from 'solid-js/store';
-import type { AppConfig, MilvusConfig, UserPreferences } from '@universalai-agent/shared';
+import { createStore } from 'solid-js/store';
+import type { AppConfig, ConnectionConfig, ServerConfig, UserPreferences } from '@universalai-agent/shared';
 
 // 检测是否在 Tauri 环境中运行
 const isTauri = () => {
@@ -16,6 +16,8 @@ if (isTauri()) {
   });
 }
 
+type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
+
 export class ConfigStore {
   private config: AppConfig;
   private setConfigFn: (fn: (state: AppConfig) => AppConfig | void) => void;
@@ -26,19 +28,18 @@ export class ConfigStore {
   private error: { value: string | null };
   private setErrorFn: (fn: (state: { value: string | null }) => { value: string | null } | void) => void;
 
+  private connectionStatus: { value: ConnectionState };
+  private setConnectionStatusFn: (fn: (state: { value: ConnectionState }) => { value: ConnectionState } | void) => void;
+
   constructor() {
     // Initialize config store
     const [configState, setConfig] = createStore<AppConfig>({
-      serverDomain: '',
-      apiToken: '',
-      llmEndpoint: '',
-      milvusConfig: {
-        host: 'localhost',
-        port: 19530,
-        collection: 'api_definitions',
-        username: undefined,
-        password: undefined
+      connection: {
+        host: '',
+        port: 443,
+        token: ''
       },
+      serverConfig: null,
       preferences: {
         theme: 'light',
         autoConfirmAPI: false,
@@ -55,11 +56,16 @@ export class ConfigStore {
     this.setLoadingFn = setLoading;
 
     // Initialize error store
-    const [errorState, setError] = createStore({ value: null });
+    const [errorState, setError] = createStore({ value: null as string | null });
     this.error = errorState;
     this.setErrorFn = setError;
 
-    this.loadConfig();
+    // Initialize connection status store
+    const [connectionStatusState, setConnectionStatus] = createStore({ value: 'idle' as ConnectionState });
+    this.connectionStatus = connectionStatusState;
+    this.setConnectionStatusFn = setConnectionStatus;
+
+    this.loadLocalConfig();
   }
 
   // Getters
@@ -75,99 +81,190 @@ export class ConfigStore {
     return this.error.value;
   }
 
-  async loadConfig(): Promise<void> {
+  get connectionState() {
+    return this.connectionStatus.value;
+  }
+
+  get isConnected() {
+    return this.connectionStatus.value === 'connected' && this.config.serverConfig !== null;
+  }
+
+  /**
+   * 加载本地存储的配置
+   */
+  private async loadLocalConfig(): Promise<void> {
     this.setLoadingFn(() => ({ value: true }));
     this.setErrorFn(() => ({ value: null }));
 
     try {
       if (isTauri() && invokeCommand) {
-        // Tauri 环境：使用加密存储
         const hasConfig = await invokeCommand<boolean>('has_config');
 
         if (hasConfig) {
           const savedConfig = await invokeCommand<AppConfig>('load_encrypted_config');
           this.setConfigFn(() => savedConfig);
-          console.log('✅ Configuration loaded from keyring');
+          console.log('✅ 配置已从密钥环加载');
         } else {
-          const defaultConfig = await invokeCommand<AppConfig>('get_default_config');
-          this.setConfigFn(() => defaultConfig);
-          console.log('ℹ️ Using default configuration');
+          console.log('ℹ️ 使用默认配置');
         }
       } else {
-        // 非 Tauri 环境：使用 localStorage
         const saved = localStorage.getItem('app_config');
         if (saved) {
           const parsedConfig = JSON.parse(saved) as AppConfig;
           this.setConfigFn(() => parsedConfig);
-          console.log('✅ Configuration loaded from localStorage');
+          console.log('✅ 配置已从 localStorage 加载');
+
+          // 如果有保存的连接配置，尝试验证连接
+          if (parsedConfig.connection.host && parsedConfig.connection.token) {
+            this.verifyConnection();
+          }
         } else {
-          console.log('ℹ️ No saved configuration, using defaults');
+          console.log('ℹ️ 无保存的配置，使用默认值');
         }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.setErrorFn(() => ({ value: errorMsg }));
-      console.error('❌ Failed to load config:', errorMsg);
+      console.error('❌ 加载配置失败:', errorMsg);
     } finally {
       this.setLoadingFn(() => ({ value: false }));
     }
   }
 
-  async saveConfig(newConfig?: Partial<AppConfig>): Promise<void> {
-    this.setLoadingFn(() => ({ value: true }));
+  /**
+   * 更新连接配置
+   */
+  updateConnection(connection: Partial<ConnectionConfig>): void {
+    this.setConfigFn((state) => ({
+      ...state,
+      connection: { ...state.connection, ...connection }
+    }));
+  }
+
+  /**
+   * 更新用户偏好
+   */
+  updatePreferences(preferences: Partial<UserPreferences>): void {
+    this.setConfigFn((state) => ({
+      ...state,
+      preferences: { ...state.preferences, ...preferences }
+    }));
+  }
+
+  /**
+   * 验证服务器连接并获取完整配置
+   */
+  async verifyConnection(): Promise<boolean> {
+    const { host, port, token } = this.config.connection;
+
+    if (!host || !token) {
+      this.setErrorFn(() => ({ value: '请填写服务器地址和Token' }));
+      return false;
+    }
+
+    this.setConnectionStatusFn(() => ({ value: 'connecting' }));
     this.setErrorFn(() => ({ value: null }));
 
     try {
-      if (newConfig) {
-        this.setConfigFn((state) => ({ ...state, ...newConfig }));
+      // 构建请求 URL
+      const protocol = port === 443 ? 'https' : 'http';
+      const baseUrl = `${protocol}://${host}:${port}`;
+
+      // 请求服务器获取完整配置
+      const response = await fetch(`${baseUrl}/api/config`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Token 无效或已过期');
+        } else if (response.status === 403) {
+          throw new Error('没有权限访问此服务器');
+        } else {
+          throw new Error(`服务器返回错误: ${response.status}`);
+        }
       }
 
+      const serverConfig = await response.json() as ServerConfig;
+
+      // 更新服务器配置
+      this.setConfigFn((state) => ({
+        ...state,
+        serverConfig
+      }));
+
+      this.setConnectionStatusFn(() => ({ value: 'connected' }));
+      console.log('✅ 已连接到服务器，配置已同步');
+      console.log('服务器配置:', serverConfig);
+
+      // 保存配置到本地
+      await this.saveConfig();
+
+      return true;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.setErrorFn(() => ({ value: errorMsg }));
+      this.setConnectionStatusFn(() => ({ value: 'failed' }));
+      console.error('❌ 连接失败:', errorMsg);
+      return false;
+    }
+  }
+
+  /**
+   * 保存配置到本地存储
+   */
+  async saveConfig(): Promise<void> {
+    try {
       if (isTauri() && invokeCommand) {
-        // Tauri 环境：使用加密存储
         await invokeCommand('save_encrypted_config', { config: this.config });
-        console.log('✅ Configuration saved to keyring');
+        console.log('✅ 配置已保存到密钥环');
       } else {
-        // 非 Tauri 环境：使用 localStorage
         localStorage.setItem('app_config', JSON.stringify(this.config));
-        console.log('✅ Configuration saved to localStorage');
+        console.log('✅ 配置已保存到 localStorage');
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.setErrorFn(() => ({ value: errorMsg }));
-      console.error('❌ Failed to save config:', errorMsg);
+      console.error('❌ 保存配置失败:', errorMsg);
       throw err;
-    } finally {
-      this.setLoadingFn(() => ({ value: false }));
     }
   }
 
-  async deleteConfig(): Promise<void> {
-    this.setLoadingFn(() => ({ value: true }));
-    this.setErrorFn(() => ({ value: null }));
+  /**
+   * 断开连接并清除服务器配置
+   */
+  async disconnect(): Promise<void> {
+    this.setConfigFn((state) => ({
+      ...state,
+      serverConfig: null
+    }));
+    this.setConnectionStatusFn(() => ({ value: 'idle' }));
+    console.log('🔌 已断开服务器连接');
+  }
 
+  /**
+   * 清除所有配置
+   */
+  async clearConfig(): Promise<void> {
     try {
       if (isTauri() && invokeCommand) {
-        // Tauri 环境：删除加密配置
         await invokeCommand('delete_encrypted_config');
-        console.log('✅ Configuration deleted from keyring');
       } else {
-        // 非 Tauri 环境：删除 localStorage
         localStorage.removeItem('app_config');
-        console.log('✅ Configuration deleted from localStorage');
       }
 
       // 重置为默认配置
       this.setConfigFn(() => ({
-        serverDomain: '',
-        apiToken: '',
-        llmEndpoint: '',
-        milvusConfig: {
-          host: 'localhost',
-          port: 19530,
-          collection: 'api_definitions',
-          username: undefined,
-          password: undefined
+        connection: {
+          host: '',
+          port: 443,
+          token: ''
         },
+        serverConfig: null,
         preferences: {
           theme: 'light',
           autoConfirmAPI: false,
@@ -175,53 +272,15 @@ export class ConfigStore {
           language: 'zh-CN'
         }
       }));
+
+      this.setConnectionStatusFn(() => ({ value: 'idle' }));
+      console.log('✅ 配置已清除');
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.setErrorFn(() => ({ value: errorMsg }));
-      console.error('❌ Failed to delete config:', errorMsg);
+      console.error('❌ 清除配置失败:', errorMsg);
       throw err;
-    } finally {
-      this.setLoadingFn(() => ({ value: false }));
     }
-  }
-
-  // Update methods
-  updateServerDomain(domain: string): void {
-    this.setConfigFn((state) => ({ ...state, serverDomain: domain }));
-  }
-
-  updateApiToken(token: string): void {
-    this.setConfigFn((state) => ({ ...state, apiToken: token }));
-  }
-
-  updateLLMEndpoint(endpoint: string): void {
-    this.setConfigFn((state) => ({ ...state, llmEndpoint: endpoint }));
-  }
-
-  updateMilvusConfig(config: Partial<MilvusConfig>): void {
-    this.setConfigFn((state) => ({
-      ...state,
-      milvusConfig: { ...state.milvusConfig, ...config }
-    }));
-  }
-
-  updatePreferences(prefs: Partial<UserPreferences>): void {
-    this.setConfigFn((state) => ({
-      ...state,
-      preferences: { ...state.preferences, ...prefs }
-    }));
-  }
-
-  getConfig(): AppConfig {
-    return this.config;
-  }
-
-  getIsLoading(): boolean {
-    return this.loading.value;
-  }
-
-  getError(): string | null {
-    return this.error.value;
   }
 
   clearError(): void {
