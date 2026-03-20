@@ -1,2 +1,2 @@
 export { configStore } from './ConfigStore';
-export { default as ConfigPage } from '../../components/ConfigPage/ConfigPage';
+export { ConfigPage } from '../../components/ConfigPage/ConfigPage';
