@@ -52,7 +52,14 @@ jobs:
         run: pnpm install
 
       - name: Build frontend
-        run: pnpm --filter tauri-app build
+        run: |
+          cd packages/tauri-app
+          pnpm build
+
+      - name: Verify frontend build
+        run: |
+          ls -lh packages/tauri-app/dist/
+          ls -lh packages/tauri-app/dist/assets/
 
       - uses: tauri-apps/tauri-action@v0
         env:
