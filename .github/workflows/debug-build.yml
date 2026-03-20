@@ -1,0 +1,52 @@
+name: Debug Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build frontend
+        run: cd packages/tauri-app && pnpm build
+
+      - name: Check dist directory
+        run: |
+          echo "=== dist 目录内容 ==="
+          dir packages\tauri-app\dist
+          echo ""
+          echo "=== dist/assets 目录内容 ==="
+          dir packages\tauri-app\dist\assets
+          echo ""
+          echo "=== 检查 index.html ==="
+          type packages\tauri-app\dist\index.html
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Tauri (Debug - No Bundle)
+        run: cd packages/tauri-app && pnpm tauri build --debug
+        continue-on-error: true
+
+      - name: Check build output
+        run: |
+          echo "=== Release bundle 目录 ==="
+          dir packages\tauri-app\src-tauri\target\release\bundle 2>nul || echo "不存在"
+          echo ""
+          echo "=== Debug bundle 目录 ==="
+          dir packages\tauri-app\src-tauri\target\debug\bundle 2>nul || echo "不存在"
