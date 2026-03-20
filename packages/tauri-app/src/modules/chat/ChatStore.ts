@@ -3,18 +3,21 @@ import type { Conversation, ChatMessage } from '../../../../shared/types/chat';
 import { llmClient } from '../llm-client';
 import { milvusClient } from '../milvus-client';
 
+interface ChatState {
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  isStreaming: boolean;
+  isSearchingAPIs: boolean;
+  error: string | null;
+}
+
 export class ChatStore {
-  private stateStore: ReturnType<typeof createStore<{
-    conversations: Conversation[];
-    activeConversationId: string | null;
-    isStreaming: boolean;
-    isSearchingAPIs: boolean;
-    error: string | null;
-  }>>;
+  private state: ChatState;
+  private setStateFn: (fn: (state: ChatState) => ChatState | void) => void;
 
   constructor() {
     // Initialize store in constructor
-    this.stateStore = createStore({
+    const [stateStore, setState] = createStore<ChatState>({
       conversations: [],
       activeConversationId: null,
       isStreaming: false,
@@ -22,16 +25,37 @@ export class ChatStore {
       error: null
     });
 
+    this.state = stateStore;
+    this.setStateFn = setState;
+
     this.loadConversations();
   }
 
   // Getters
-  get state() {
-    return this.stateStore[0];
+  get currentState() {
+    return this.state;
   }
 
-  // Private setter
-  private setState = this.stateStore[1];
+  get conversations() {
+    return this.state.conversations;
+  }
+
+  get activeConversation() {
+    const id = this.state.activeConversationId;
+    return id ? this.state.conversations.find(c => c.id === id) : null;
+  }
+
+  get isStreaming() {
+    return this.state.isStreaming;
+  }
+
+  get isSearchingAPIs() {
+    return this.state.isSearchingAPIs;
+  }
+
+  get error() {
+    return this.state.error;
+  }
 
   /**
    * Load conversations from local storage
@@ -41,9 +65,9 @@ export class ChatStore {
       const saved = localStorage.getItem('conversations');
       if (saved) {
         const conversations: Conversation[] = JSON.parse(saved);
-        this.setState('conversations', conversations);
+        this.setStateFn((state) => ({ ...state, conversations }));
         if (conversations.length > 0) {
-          this.setState('activeConversationId', conversations[0].id);
+          this.setStateFn((state) => ({ ...state, activeConversationId: conversations[0].id }));
         }
       }
     } catch (error) {
@@ -65,233 +89,165 @@ export class ChatStore {
   /**
    * Create a new conversation
    */
-  createConversation(title?: string): string {
-    const newConversation: Conversation = {
-      id: crypto.randomUUID(),
+  createConversation(title?: string): Conversation {
+    const conversation: Conversation = {
+      id: Date.now().toString(),
       title: title || `对话 ${this.state.conversations.length + 1}`,
       messages: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now()
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
 
-    this.setState(produce(state => {
-      state.conversations.unshift(newConversation);
-      state.activeConversationId = newConversation.id;
+    this.setStateFn((state) => ({
+      ...state,
+      conversations: [...state.conversations, conversation],
+      activeConversationId: conversation.id
     }));
 
     this.saveConversations();
-    return newConversation.id;
+    return conversation;
+  }
+
+  /**
+   * Select a conversation
+   */
+  selectConversation(id: string): void {
+    this.setStateFn((state) => ({ ...state, activeConversationId: id }));
   }
 
   /**
    * Delete a conversation
    */
   deleteConversation(id: string): void {
-    this.setState(produce(state => {
-      const index = state.conversations.findIndex(c => c.id === id);
-      if (index !== -1) {
-        state.conversations.splice(index, 1);
+    this.setStateFn((state) => {
+      const conversations = state.conversations.filter(c => c.id !== id);
+      let activeConversationId = state.activeConversationId;
 
-        // If deleted conversation was active, switch to another
-        if (state.activeConversationId === id) {
-          state.activeConversationId = state.conversations[0]?.id || null;
-        }
+      if (activeConversationId === id) {
+        activeConversationId = conversations.length > 0 ? conversations[0].id : null;
       }
-    }));
+
+      return { ...state, conversations, activeConversationId };
+    });
 
     this.saveConversations();
   }
 
   /**
-   * Set active conversation
+   * Add a message to the active conversation
    */
-  setActiveConversation(id: string): void {
-    this.setState('activeConversationId', id);
-  }
+  addMessage(message: Omit<ChatMessage, 'id' | 'timestamp'>): void {
+    const activeId = this.state.activeConversationId;
+    if (!activeId) return;
 
-  /**
-   * Get active conversation
-   */
-  getActiveConversation(): Conversation | undefined {
-    return this.state.conversations.find(c => c.id === this.state.activeConversationId);
-  }
-
-  /**
-   * Send a message
-   */
-  async sendMessage(content: string): Promise<void> {
-    let conversationId = this.state.activeConversationId;
-
-    // Create new conversation if none exists
-    if (!conversationId) {
-      conversationId = this.createConversation();
-    }
-
-    // Add user message
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-      status: 'success'
+    const newMessage: ChatMessage = {
+      ...message,
+      id: Date.now().toString(),
+      timestamp: new Date().toISOString()
     };
 
-    this.setState(produce(state => {
-      const conv = state.conversations.find(c => c.id === conversationId);
-      if (conv) {
-        conv.messages.push(userMessage);
-        conv.updatedAt = Date.now();
-
-        // Update title if it's the first message
-        if (conv.messages.length === 1) {
-          conv.title = content.slice(0, 30) + (content.length > 30 ? '...' : '');
+    this.setStateFn((state) => ({
+      ...state,
+      conversations: state.conversations.map(conv => {
+        if (conv.id === activeId) {
+          return {
+            ...conv,
+            messages: [...conv.messages, newMessage],
+            updatedAt: new Date().toISOString()
+          };
         }
-      }
+        return conv;
+      })
     }));
 
     this.saveConversations();
-
-    // Prepare messages for LLM
-    const conversation = this.state.conversations.find(c => c.id === conversationId);
-    if (!conversation) return;
-
-    const messages = conversation.messages.map(m => ({
-      role: m.role,
-      content: m.content
-    }));
-
-    // Create placeholder for assistant response
-    const assistantMessageId = crypto.randomUUID();
-    this.setState(produce(state => {
-      const conv = state.conversations.find(c => c.id === conversationId);
-      if (conv) {
-        conv.messages.push({
-          id: assistantMessageId,
-          role: 'assistant',
-          content: '',
-          timestamp: Date.now(),
-          status: 'sending'
-        });
-      }
-    }));
-
-    this.setState('isStreaming', true);
-    this.setState('error', null);
-
-    try {
-      // Stream LLM response
-      await llmClient.chat(
-        messages,
-        // On token
-        (token: string) => {
-          this.setState(produce(state => {
-            const conv = state.conversations.find(c => c.id === conversationId);
-            if (conv) {
-              const msg = conv.messages.find(m => m.id === assistantMessageId);
-              if (msg) {
-                msg.content += token;
-              }
-            }
-          }));
-        },
-        // On complete
-        async () => {
-          // Mark message as success
-          this.setState(produce(state => {
-            const conv = state.conversations.find(c => c.id === conversationId);
-            if (conv) {
-              const msg = conv.messages.find(m => m.id === assistantMessageId);
-              if (msg) {
-                msg.status = 'success';
-              }
-              conv.updatedAt = Date.now();
-            }
-          }));
-
-          this.setState('isStreaming', false);
-          this.saveConversations();
-
-          // Search for matching APIs
-          await this.searchAPIs(content, conversationId!);
-        },
-        // On error
-        (error: string) => {
-          this.setState(produce(state => {
-            const conv = state.conversations.find(c => c.id === conversationId);
-            if (conv) {
-              const msg = conv.messages.find(m => m.id === assistantMessageId);
-              if (msg) {
-                msg.content = `❌ 错误: ${error}`;
-                msg.status = 'error';
-              }
-            }
-          }));
-
-          this.setState('isStreaming', false);
-          this.setState('error', error);
-        }
-      );
-
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.setState('error', errorMsg);
-      this.setState('isStreaming', false);
-    }
   }
 
   /**
-   * Search for matching APIs
+   * Update the last assistant message
    */
-  private async searchAPIs(query: string, conversationId: string): Promise<void> {
-    this.setState('isSearchingAPIs', true);
+  updateLastAssistantMessage(content: string): void {
+    const activeId = this.state.activeConversationId;
+    if (!activeId) return;
 
-    try {
-      const apis = await milvusClient.searchAPIs(query, 5);
+    this.setStateFn((state) => ({
+      ...state,
+      conversations: state.conversations.map(conv => {
+        if (conv.id === activeId) {
+          const messages = [...conv.messages];
+          const lastMessage = messages[messages.length - 1];
 
-      // Add APIs to the last assistant message
-      this.setState(produce(state => {
-        const conv = state.conversations.find(c => c.id === conversationId);
-        if (conv && conv.messages.length > 0) {
-          const lastMsg = conv.messages[conv.messages.length - 1];
-          if (lastMsg.role === 'assistant') {
-            lastMsg.matchedAPIs = apis.map(api => api.id);
+          if (lastMessage && lastMessage.role === 'assistant') {
+            messages[messages.length - 1] = {
+              ...lastMessage,
+              content
+            };
           }
+
+          return { ...conv, messages, updatedAt: new Date().toISOString() };
         }
-      }));
-
-      // Store API metadata separately for easy access
-      // We'll retrieve full API details when user wants to execute
-
-      this.saveConversations();
-
-    } catch (error) {
-      console.error('API search failed:', error);
-      // Don't show error to user, as this is a background operation
-    } finally {
-      this.setState('isSearchingAPIs', false);
-    }
+        return conv;
+      })
+    }));
   }
 
   /**
-   * Cancel current stream
+   * Set matched APIs for a message
    */
-  cancelStream(): void {
-    llmClient.cancel();
-    this.setState('isStreaming', false);
+  setMatchedAPIs(messageId: string, apis: any[]): void {
+    const activeId = this.state.activeConversationId;
+    if (!activeId) return;
+
+    this.setStateFn((state) => ({
+      ...state,
+      conversations: state.conversations.map(conv => {
+        if (conv.id === activeId) {
+          return {
+            ...conv,
+            messages: conv.messages.map(msg => {
+              if (msg.id === messageId) {
+                return { ...msg, matchedAPIs: apis };
+              }
+              return msg;
+            })
+          };
+        }
+        return conv;
+      })
+    }));
   }
 
   /**
-   * Clear error
+   * Set streaming state
    */
-  clearError(): void {
-    this.setState('error', null);
+  setStreaming(isStreaming: boolean): void {
+    this.setStateFn((state) => ({ ...state, isStreaming }));
   }
 
   /**
-   * Get state
+   * Set searching APIs state
    */
-  getState() {
-    return this.state;
+  setSearchingAPIs(isSearchingAPIs: boolean): void {
+    this.setStateFn((state) => ({ ...state, isSearchingAPIs }));
+  }
+
+  /**
+   * Set error
+   */
+  setError(error: string | null): void {
+    this.setStateFn((state) => ({ ...state, error }));
+  }
+
+  /**
+   * Clear all conversations
+   */
+  clearAllConversations(): void {
+    this.setStateFn((state) => ({
+      ...state,
+      conversations: [],
+      activeConversationId: null
+    }));
+    localStorage.removeItem('conversations');
   }
 }
 

@@ -3,13 +3,18 @@ import { invoke } from '@tauri-apps/api/core';
 import type { AppConfig, MilvusConfig, UserPreferences } from '@universalai-agent/shared';
 
 export class ConfigStore {
-  private configState: ReturnType<typeof createStore<AppConfig>>;
-  private loadingState: ReturnType<typeof createStore<{ value: boolean }>>;
-  private errorState: ReturnType<typeof createStore<{ value: string | null }>>;
+  private config: AppConfig;
+  private setConfigFn: (fn: (state: AppConfig) => AppConfig | void) => void;
+
+  private loading: { value: boolean };
+  private setLoadingFn: (fn: (state: { value: boolean }) => { value: boolean } | void) => void;
+
+  private error: { value: string | null };
+  private setErrorFn: (fn: (state: { value: string | null }) => { value: string | null } | void) => void;
 
   constructor() {
-    // Initialize stores in constructor
-    this.configState = createStore<AppConfig>({
+    // Initialize config store
+    const [configState, setConfig] = createStore<AppConfig>({
       serverDomain: '',
       apiToken: '',
       llmEndpoint: '',
@@ -27,34 +32,38 @@ export class ConfigStore {
         language: 'zh-CN'
       }
     });
+    this.config = configState;
+    this.setConfigFn = setConfig;
 
-    this.loadingState = createStore({ value: false });
-    this.errorState = createStore({ value: null });
+    // Initialize loading store
+    const [loadingState, setLoading] = createStore({ value: false });
+    this.loading = loadingState;
+    this.setLoadingFn = setLoading;
+
+    // Initialize error store
+    const [errorState, setError] = createStore({ value: null });
+    this.error = errorState;
+    this.setErrorFn = setError;
 
     this.loadConfig();
   }
 
   // Getters
-  get config() {
-    return this.configState[0];
+  get currentConfig() {
+    return this.config;
   }
 
   get isLoading() {
-    return this.loadingState[0]().value;
+    return this.loading.value;
   }
 
-  get error() {
-    return this.errorState[0]().value;
+  get currentError() {
+    return this.error.value;
   }
-
-  // Private setters
-  private setConfig = this.configState[1];
-  private setIsLoading = this.loadingState[1];
-  private setError = this.errorState[1];
 
   async loadConfig(): Promise<void> {
-    this.setIsLoading({ value: true });
-    this.setError({ value: null });
+    this.setLoadingFn(() => ({ value: true }));
+    this.setErrorFn(() => ({ value: null }));
 
     try {
       // Check if config exists
@@ -62,87 +71,87 @@ export class ConfigStore {
 
       if (hasConfig) {
         const savedConfig = await invoke<AppConfig>('load_encrypted_config');
-        this.setConfig(savedConfig);
+        this.setConfigFn(() => savedConfig);
         console.log('✅ Configuration loaded from keyring');
       } else {
         // Load default config
         const defaultConfig = await invoke<AppConfig>('get_default_config');
-        this.setConfig(defaultConfig);
+        this.setConfigFn(() => defaultConfig);
         console.log('ℹ️ Using default configuration');
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.setError({ value: errorMsg });
+      this.setErrorFn(() => ({ value: errorMsg }));
       console.error('❌ Failed to load config:', errorMsg);
     } finally {
-      this.setIsLoading({ value: false });
+      this.setLoadingFn(() => ({ value: false }));
     }
   }
 
   async saveConfig(newConfig?: Partial<AppConfig>): Promise<void> {
-    this.setIsLoading({ value: true });
-    this.setError({ value: null });
+    this.setLoadingFn(() => ({ value: true }));
+    this.setErrorFn(() => ({ value: null }));
 
     try {
       if (newConfig) {
-        this.setConfig(produce(state => {
-          Object.assign(state, newConfig);
-        }));
+        this.setConfigFn((state) => ({ ...state, ...newConfig }));
       }
 
       await invoke('save_encrypted_config', { config: this.config });
       console.log('✅ Configuration saved to keyring');
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.setError({ value: errorMsg });
+      this.setErrorFn(() => ({ value: errorMsg }));
       console.error('❌ Failed to save config:', errorMsg);
       throw err;
     } finally {
-      this.setIsLoading({ value: false });
+      this.setLoadingFn(() => ({ value: false }));
     }
   }
 
   async deleteConfig(): Promise<void> {
-    this.setIsLoading({ value: true });
-    this.setError({ value: null });
+    this.setLoadingFn(() => ({ value: true }));
+    this.setErrorFn(() => ({ value: null }));
 
     try {
       await invoke('delete_encrypted_config');
       const defaultConfig = await invoke<AppConfig>('get_default_config');
-      this.setConfig(defaultConfig);
+      this.setConfigFn(() => defaultConfig);
       console.log('✅ Configuration deleted');
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.setError({ value: errorMsg });
+      this.setErrorFn(() => ({ value: errorMsg }));
       console.error('❌ Failed to delete config:', errorMsg);
       throw err;
     } finally {
-      this.setIsLoading({ value: false });
+      this.setLoadingFn(() => ({ value: false }));
     }
   }
 
   // Update methods
   updateServerDomain(domain: string): void {
-    this.setConfig('serverDomain', domain);
+    this.setConfigFn((state) => ({ ...state, serverDomain: domain }));
   }
 
   updateApiToken(token: string): void {
-    this.setConfig('apiToken', token);
+    this.setConfigFn((state) => ({ ...state, apiToken: token }));
   }
 
   updateLLMEndpoint(endpoint: string): void {
-    this.setConfig('llmEndpoint', endpoint);
+    this.setConfigFn((state) => ({ ...state, llmEndpoint: endpoint }));
   }
 
   updateMilvusConfig(config: Partial<MilvusConfig>): void {
-    this.setConfig('milvusConfig', produce(state => {
-      Object.assign(state, config);
+    this.setConfigFn((state) => ({
+      ...state,
+      milvusConfig: { ...state.milvusConfig, ...config }
     }));
   }
 
   updatePreferences(prefs: Partial<UserPreferences>): void {
-    this.setConfig('preferences', produce(state => {
-      Object.assign(state, prefs);
+    this.setConfigFn((state) => ({
+      ...state,
+      preferences: { ...state.preferences, ...prefs }
     }));
   }
 
@@ -151,15 +160,15 @@ export class ConfigStore {
   }
 
   getIsLoading(): boolean {
-    return this.isLoading;
+    return this.loading.value;
   }
 
   getError(): string | null {
-    return this.error;
+    return this.error.value;
   }
 
   clearError(): void {
-    this.setError({ value: null });
+    this.setErrorFn(() => ({ value: null }));
   }
 }
 
