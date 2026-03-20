@@ -6,9 +6,9 @@ export function ConfigPage() {
   const [showToken, setShowToken] = createSignal(false);
   const [saveStatus, setSaveStatus] = createSignal<'idle' | 'saving' | 'success' | 'error'>('idle');
 
-  const config = () => configStore.getConfig();
-  const isLoading = () => configStore.isLoading();
-  const error = () => configStore.getError();
+  const config = () => configStore.currentConfig;
+  const isLoading = () => configStore.isLoading;
+  const error = () => configStore.currentError;
 
   const handleSave = async () => {
     setSaveStatus('saving');

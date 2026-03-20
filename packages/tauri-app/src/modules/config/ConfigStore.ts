@@ -1,6 +1,20 @@
 import { createStore, produce } from 'solid-js/store';
-import { invoke } from '@tauri-apps/api/core';
 import type { AppConfig, MilvusConfig, UserPreferences } from '@universalai-agent/shared';
+
+// 检测是否在 Tauri 环境中运行
+const isTauri = () => {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+};
+
+// 动态导入 invoke，仅在 Tauri 环境中使用
+let invokeCommand: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
+if (isTauri()) {
+  import('@tauri-apps/api/core').then(mod => {
+    invokeCommand = mod.invoke;
+  }).catch(err => {
+    console.warn('Failed to load Tauri API:', err);
+  });
+}
 
 export class ConfigStore {
   private config: AppConfig;
@@ -66,18 +80,29 @@ export class ConfigStore {
     this.setErrorFn(() => ({ value: null }));
 
     try {
-      // Check if config exists
-      const hasConfig = await invoke<boolean>('has_config');
+      if (isTauri() && invokeCommand) {
+        // Tauri 环境：使用加密存储
+        const hasConfig = await invokeCommand<boolean>('has_config');
 
-      if (hasConfig) {
-        const savedConfig = await invoke<AppConfig>('load_encrypted_config');
-        this.setConfigFn(() => savedConfig);
-        console.log('✅ Configuration loaded from keyring');
+        if (hasConfig) {
+          const savedConfig = await invokeCommand<AppConfig>('load_encrypted_config');
+          this.setConfigFn(() => savedConfig);
+          console.log('✅ Configuration loaded from keyring');
+        } else {
+          const defaultConfig = await invokeCommand<AppConfig>('get_default_config');
+          this.setConfigFn(() => defaultConfig);
+          console.log('ℹ️ Using default configuration');
+        }
       } else {
-        // Load default config
-        const defaultConfig = await invoke<AppConfig>('get_default_config');
-        this.setConfigFn(() => defaultConfig);
-        console.log('ℹ️ Using default configuration');
+        // 非 Tauri 环境：使用 localStorage
+        const saved = localStorage.getItem('app_config');
+        if (saved) {
+          const parsedConfig = JSON.parse(saved) as AppConfig;
+          this.setConfigFn(() => parsedConfig);
+          console.log('✅ Configuration loaded from localStorage');
+        } else {
+          console.log('ℹ️ No saved configuration, using defaults');
+        }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -97,8 +122,15 @@ export class ConfigStore {
         this.setConfigFn((state) => ({ ...state, ...newConfig }));
       }
 
-      await invoke('save_encrypted_config', { config: this.config });
-      console.log('✅ Configuration saved to keyring');
+      if (isTauri() && invokeCommand) {
+        // Tauri 环境：使用加密存储
+        await invokeCommand('save_encrypted_config', { config: this.config });
+        console.log('✅ Configuration saved to keyring');
+      } else {
+        // 非 Tauri 环境：使用 localStorage
+        localStorage.setItem('app_config', JSON.stringify(this.config));
+        console.log('✅ Configuration saved to localStorage');
+      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.setErrorFn(() => ({ value: errorMsg }));
@@ -114,10 +146,35 @@ export class ConfigStore {
     this.setErrorFn(() => ({ value: null }));
 
     try {
-      await invoke('delete_encrypted_config');
-      const defaultConfig = await invoke<AppConfig>('get_default_config');
-      this.setConfigFn(() => defaultConfig);
-      console.log('✅ Configuration deleted');
+      if (isTauri() && invokeCommand) {
+        // Tauri 环境：删除加密配置
+        await invokeCommand('delete_encrypted_config');
+        console.log('✅ Configuration deleted from keyring');
+      } else {
+        // 非 Tauri 环境：删除 localStorage
+        localStorage.removeItem('app_config');
+        console.log('✅ Configuration deleted from localStorage');
+      }
+
+      // 重置为默认配置
+      this.setConfigFn(() => ({
+        serverDomain: '',
+        apiToken: '',
+        llmEndpoint: '',
+        milvusConfig: {
+          host: 'localhost',
+          port: 19530,
+          collection: 'api_definitions',
+          username: undefined,
+          password: undefined
+        },
+        preferences: {
+          theme: 'light',
+          autoConfirmAPI: false,
+          maxTokens: 2000,
+          language: 'zh-CN'
+        }
+      }));
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.setErrorFn(() => ({ value: errorMsg }));
